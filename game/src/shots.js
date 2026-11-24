@@ -1,79 +1,119 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// Palmera Bay — screenshot scenes behind ?shot=cover|drive|foot|chase.
+// Each one stages a real, playable situation (no fake pixels: the frame is the
+// game running), then lets the loop play it forward for a few seconds so the
+// traffic, the police and the particles are alive in the shot.
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+import { CONFIG } from './config.js';
+import { startMission } from './missions.js';
+import { makeCop } from './police.js';
+import { makeCar } from './vehicles.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
+function putPlayerInCar(G, x, y, angle, speed) {
+  const car = makeCar(x, y, angle, '#d33a2c', 'player');
+  car.speed = speed;
+  G.cars.push(car);
+  G.playerCar = car;
+  G.player.inCar = true;
+  G.player.x = x;
+  G.player.y = y;
+  G.player.angle = angle;
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
+function addCopCar(G, x, y, angle) {
+  const cop = makeCop(x, y, false);
+  cop.car = makeCar(x, y, angle, CONFIG.COLORS.copCar, 'cop');
+  cop.car.speed = 380;
+  G.cars.push(cop.car);
+  G.cops.push(cop);
+  return cop;
 }
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+function addCopFoot(G, x, y) {
+  const cop = makeCop(x, y, true);
+  G.cops.push(cop);
+  return cop;
+}
+
+function addGunman(G, x, y, lieutenant) {
+  G.enemies.push({
+    x, y, angle: Math.PI,
+    hp: lieutenant ? CONFIG.LIEUTENANT_HP : CONFIG.ENEMY_HP,
+    shootTimer: 0.6,
+    isLieutenant: !!lieutenant,
+    alive: true,
+  });
+}
+
+export function applyShot(G, shot) {
+  // Every scene starts from a fresh game in mission 1, mid-morning light.
+  G.startNewGame();
+  G.clockHours = 10.5;
+  G.state = 'playing';
+  G.audio.unlock(true); // screenshots stay silent: no user gesture in headless
+
+  if (shot === 'cover') {
+    // The cover: a high-speed police chase down the beachfront road, 4 stars.
+    putPlayerInCar(G, 2980, 1400, -Math.PI / 2, 480);
+    addCopCar(G, 2980, 1750, -Math.PI / 2);
+    addCopCar(G, 2940, 1900, -Math.PI / 2);
+    addCopCar(G, 3020, 2050, -Math.PI / 2);
+    addCopFoot(G, 2900, 1300);
+    G.setWanted(4, 'staged chase');
+    G.money = 1250;
+    G.mission = { index: 1, title: 'Mobil Delgado', briefing: '', reward: 300, stage: 1, target: { x: 600, y: 600, label: 'Garasi Voss' }, guardsLeft: 0, done: false };
+    G.showBanner('KEJARAN POLISI', 'Bintang empat — kabur dari beachfront!');
+  } else if (shot === 'drive') {
+    // Cruising the beachfront road in the sun, light traffic around.
+    putPlayerInCar(G, 2980, 1000, Math.PI / 2, 320);
+    G.setWanted(0, 'staged cruise');
+    G.money = 450;
+    G.showBanner('PALMERA BAY', 'Beachfront — jalan pesisir kota.');
+  } else if (shot === 'foot') {
+    // On foot in Plaza del Sol, pedestrians strolling, fountain behind.
+    G.player.x = 2200;
+    G.player.y = 1850;
+    G.player.angle = -Math.PI / 2;
+    G.player.inCar = false;
+    // A few strollers around the plaza so the square feels alive.
+    for (let i = 0; i < 5 && i < G.peds.length; i++) {
+      const p = G.peds[i];
+      p.x = 2080 + i * 55;
+      p.y = 1700 + (i % 2) * 220;
+      p.target = { x: 2200 + (i - 2) * 60, y: 1800 };
+    }
+    G.setWanted(0, 'staged stroll');
+    G.money = 150;
+    G.mission = { index: 0, title: 'Paket untuk Mara', briefing: '', reward: 150, stage: 0, target: { x: 3060, y: 1180, label: 'Palmera Pier' }, guardsLeft: 0, done: false };
+  } else if (shot === 'chase') {
+    // Shootout with the police at the plaza: 5 stars, gunmen, muzzle fire.
+    G.player.x = 2150;
+    G.player.y = 1750;
+    G.player.angle = Math.PI / 4;
+    G.player.inCar = false;
+    G.ammo = 48;
+    addCopFoot(G, 2280, 1680);
+    addCopFoot(G, 2060, 1660);
+    addCopCar(G, 2200, 1950, -Math.PI / 2);
+    addGunman(G, 2320, 1850, true);
+    addGunman(G, 2100, 1900, false);
+    G.setWanted(5, 'staged shootout');
+    G.money = 2100;
+    G.mission = { index: 4, title: 'Pertemuan Terakhir', briefing: '', reward: 1000, stage: 1, target: { x: 2200, y: 1800, label: 'Plaza del Sol' }, guardsLeft: 4, done: false };
+    G.showBanner('TEMBAK-MENEMBAK', 'Letnan Delgado dan polisi — bertahanlah, Leo!');
+    // A couple of live bullets in the air so the frame reads as a firefight.
+    G.bullets.push({ x: 2200, y: 1780, vx: 700, vy: -500, life: 0.8, fromPlayer: false });
+    G.bullets.push({ x: 2180, y: 1760, vx: 800, vy: 300, life: 0.8, fromPlayer: true });
+    G.muzzle = 0.3;
+  } else {
+    // Unknown shot name: just play the opening mission.
+    startMission(G, 0);
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
-  }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+
+  // Snap the camera onto the player at once, no slow pan-in.
+  G.camera.x = Math.max(0, Math.min(CONFIG.WORLD_W - G.viewW, G.player.x - G.viewW / 2));
+  G.camera.y = Math.max(0, Math.min(CONFIG.WORLD_H - G.viewH, G.player.y - G.viewH / 2));
+  // The banner fades fast in a staged shot so the world, not the banner, fills the frame.
+  G.bannerTimer = Math.min(G.bannerTimer, 1.0);
+  G.frames = 0;
+  G.ready = false;
 }
